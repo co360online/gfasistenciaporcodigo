@@ -1,0 +1,289 @@
+<?php
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+class CO360_DB {
+    public static function table( $name ) {
+        global $wpdb;
+        return $wpdb->prefix . 'co360_' . $name;
+    }
+
+    public static function activate() {
+        self::create_tables();
+    }
+
+    public static function create_tables() {
+        global $wpdb;
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+        $charset = $wpdb->get_charset_collate();
+
+        $projects = self::table( 'projects' );
+        $codes    = self::table( 'codes' );
+        $uses     = self::table( 'uses' );
+        $maps     = self::table( 'gf_mappings' );
+
+        $sql = array();
+
+        $sql[] = "CREATE TABLE {$projects} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            PRIMARY KEY  (id)
+        ) {$charset};";
+
+        $sql[] = "CREATE TABLE {$codes} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            project_id BIGINT UNSIGNED NOT NULL,
+            code VARCHAR(50) NOT NULL,
+            max_uses INT NOT NULL DEFAULT 1,
+            uses_count INT NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY code (code),
+            KEY project_id (project_id)
+        ) {$charset};";
+
+        $sql[] = "CREATE TABLE {$uses} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            project_id BIGINT UNSIGNED NOT NULL,
+            code_id BIGINT UNSIGNED NOT NULL,
+            code VARCHAR(50) NOT NULL,
+            user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            gf_entry_id BIGINT UNSIGNED NULL,
+            used_at DATETIME NOT NULL,
+            ip VARCHAR(100) NULL,
+            user_agent TEXT NULL,
+            PRIMARY KEY  (id),
+            KEY project_id (project_id),
+            KEY code_id (code_id)
+        ) {$charset};";
+
+        $sql[] = "CREATE TABLE {$maps} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            form_id INT NOT NULL,
+            field_id VARCHAR(50) NOT NULL,
+            project_id BIGINT UNSIGNED NOT NULL,
+            PRIMARY KEY  (id),
+            KEY form_id (form_id),
+            KEY project_id (project_id)
+        ) {$charset};";
+
+        foreach ( $sql as $statement ) {
+            dbDelta( $statement );
+        }
+    }
+
+    public static function insert_project( $name, $description ) {
+        global $wpdb;
+        $table = self::table( 'projects' );
+        $now   = current_time( 'mysql' );
+
+        $wpdb->insert(
+            $table,
+            array(
+                'name'        => $name,
+                'description' => $description,
+                'status'      => 'active',
+                'created_at'  => $now,
+                'updated_at'  => $now,
+            ),
+            array( '%s', '%s', '%s', '%s', '%s' )
+        );
+
+        return $wpdb->insert_id;
+    }
+
+    public static function update_project( $id, $name, $description, $status ) {
+        global $wpdb;
+        $table = self::table( 'projects' );
+        $wpdb->update(
+            $table,
+            array(
+                'name'        => $name,
+                'description' => $description,
+                'status'      => $status,
+                'updated_at'  => current_time( 'mysql' ),
+            ),
+            array( 'id' => $id ),
+            array( '%s', '%s', '%s', '%s' ),
+            array( '%d' )
+        );
+    }
+
+    public static function toggle_project_status( $id ) {
+        global $wpdb;
+        $table  = self::table( 'projects' );
+        $status = $wpdb->get_var( $wpdb->prepare( "SELECT status FROM {$table} WHERE id = %d", $id ) );
+        if ( ! $status ) {
+            return;
+        }
+        $new_status = ( 'active' === $status ) ? 'archived' : 'active';
+        $wpdb->update(
+            $table,
+            array(
+                'status'     => $new_status,
+                'updated_at' => current_time( 'mysql' ),
+            ),
+            array( 'id' => $id ),
+            array( '%s', '%s' ),
+            array( '%d' )
+        );
+    }
+
+    public static function get_project( $id ) {
+        global $wpdb;
+        $table = self::table( 'projects' );
+        return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id ) );
+    }
+
+    public static function get_projects() {
+        global $wpdb;
+        $table = self::table( 'projects' );
+        return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY created_at DESC" );
+    }
+
+    public static function get_project_stats( $project_id ) {
+        global $wpdb;
+        $codes = self::table( 'codes' );
+        return $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN uses_count >= max_uses THEN 1 ELSE 0 END) AS used,
+                    SUM(CASE WHEN uses_count < max_uses THEN 1 ELSE 0 END) AS available
+                FROM {$codes}
+                WHERE project_id = %d",
+                $project_id
+            )
+        );
+    }
+
+    public static function get_codes( $project_id = 0 ) {
+        global $wpdb;
+        $table = self::table( 'codes' );
+        if ( $project_id ) {
+            return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE project_id = %d ORDER BY created_at DESC", $project_id ) );
+        }
+        return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY created_at DESC" );
+    }
+
+    public static function generate_codes( $project_id, $quantity, $length, $prefix, $max_uses ) {
+        global $wpdb;
+        $table = self::table( 'codes' );
+        $now   = current_time( 'mysql' );
+        $created = 0;
+
+        while ( $created < $quantity ) {
+            $code = co360_generate_code( $length );
+            if ( $prefix ) {
+                $code = $prefix . $code;
+            }
+            $code = co360_normalize_code( $code );
+
+            $exists = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE code = %s", $code ) );
+            if ( $exists ) {
+                continue;
+            }
+
+            $inserted = $wpdb->insert(
+                $table,
+                array(
+                    'project_id' => $project_id,
+                    'code'       => $code,
+                    'max_uses'   => $max_uses,
+                    'uses_count' => 0,
+                    'is_active'  => 1,
+                    'created_at' => $now,
+                ),
+                array( '%d', '%s', '%d', '%d', '%d', '%s' )
+            );
+
+            if ( $inserted ) {
+                $created++;
+            }
+        }
+
+        return $created;
+    }
+
+    public static function get_code_for_project( $project_id, $code ) {
+        global $wpdb;
+        $table = self::table( 'codes' );
+        return $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT * FROM {$table} WHERE project_id = %d AND code = %s",
+                $project_id,
+                $code
+            )
+        );
+    }
+
+    public static function increment_code_use( $code_id ) {
+        global $wpdb;
+        $table = self::table( 'codes' );
+        $sql   = $wpdb->prepare(
+            "UPDATE {$table} SET uses_count = uses_count + 1 WHERE id = %d AND uses_count < max_uses",
+            $code_id
+        );
+        $wpdb->query( $sql );
+        return $wpdb->rows_affected;
+    }
+
+    public static function insert_use_log( $data ) {
+        global $wpdb;
+        $table = self::table( 'uses' );
+        $wpdb->insert(
+            $table,
+            $data,
+            array( '%d', '%d', '%s', '%d', '%d', '%s', '%s', '%s' )
+        );
+    }
+
+    public static function get_uses( $project_id = 0 ) {
+        global $wpdb;
+        $table = self::table( 'uses' );
+        if ( $project_id ) {
+            return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE project_id = %d ORDER BY used_at DESC", $project_id ) );
+        }
+        return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY used_at DESC" );
+    }
+
+    public static function get_mappings() {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY id DESC" );
+    }
+
+    public static function add_mapping( $form_id, $field_id, $project_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        $wpdb->insert(
+            $table,
+            array(
+                'form_id'    => $form_id,
+                'field_id'   => $field_id,
+                'project_id' => $project_id,
+            ),
+            array( '%d', '%s', '%d' )
+        );
+    }
+
+    public static function delete_mapping( $id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        $wpdb->delete( $table, array( 'id' => $id ), array( '%d' ) );
+    }
+
+    public static function get_mapping_for_form( $form_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE form_id = %d", $form_id ) );
+    }
+}
