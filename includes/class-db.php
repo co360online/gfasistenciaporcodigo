@@ -57,6 +57,7 @@ class CO360_DB {
             code VARCHAR(50) NOT NULL,
             user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             gf_entry_id BIGINT UNSIGNED NULL,
+            course_id INT NULL DEFAULT 0,
             used_at DATETIME NOT NULL,
             ip VARCHAR(100) NULL,
             user_agent TEXT NULL,
@@ -69,6 +70,7 @@ class CO360_DB {
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             form_id INT NOT NULL,
             field_id VARCHAR(50) NOT NULL,
+            course_id INT NULL DEFAULT 0,
             project_id BIGINT UNSIGNED NOT NULL,
             PRIMARY KEY  (id),
             KEY form_id (form_id),
@@ -77,6 +79,17 @@ class CO360_DB {
 
         foreach ( $sql as $statement ) {
             dbDelta( $statement );
+        }
+
+        self::maybe_add_column( $maps, 'course_id', 'INT NULL DEFAULT 0' );
+        self::maybe_add_column( $uses, 'course_id', 'INT NULL DEFAULT 0' );
+    }
+
+    private static function maybe_add_column( $table, $column, $definition ) {
+        global $wpdb;
+        $existing = $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$table} LIKE %s", $column ) );
+        if ( ! $existing ) {
+            $wpdb->query( "ALTER TABLE {$table} ADD COLUMN {$column} {$definition}" );
         }
     }
 
@@ -285,7 +298,7 @@ class CO360_DB {
         $wpdb->insert(
             $table,
             $data,
-            array( '%d', '%d', '%s', '%d', '%d', '%s', '%s', '%s' )
+            array( '%d', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s' )
         );
     }
 
@@ -304,7 +317,74 @@ class CO360_DB {
         return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY id DESC" );
     }
 
-    public static function add_mapping( $form_id, $field_id, $project_id ) {
+    public static function get_mapping_group( $course_id, $form_id, $field_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table} WHERE course_id = %d AND form_id = %d AND field_id = %s",
+                $course_id,
+                $form_id,
+                $field_id
+            )
+        );
+    }
+
+    public static function get_course_ids() {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_col( "SELECT DISTINCT course_id FROM {$table} ORDER BY course_id ASC" );
+    }
+
+    public static function get_mapping_groups( $course_id = null ) {
+        global $wpdb;
+        $table    = self::table( 'gf_mappings' );
+        $projects = self::table( 'projects' );
+
+        $sql = "SELECT
+            maps.course_id,
+            maps.form_id,
+            maps.field_id,
+            GROUP_CONCAT(projects.name ORDER BY projects.name SEPARATOR ', ') AS project_names
+        FROM {$table} AS maps
+        LEFT JOIN {$projects} AS projects ON maps.project_id = projects.id";
+
+        if ( null !== $course_id ) {
+            $sql .= $wpdb->prepare( ' WHERE maps.course_id = %d', $course_id );
+        }
+
+        $sql .= ' GROUP BY maps.course_id, maps.form_id, maps.field_id ORDER BY maps.course_id ASC, maps.form_id ASC';
+
+        return $wpdb->get_results( $sql );
+    }
+
+    public static function get_distinct_course_ids_for_form_field( $form_id, $field_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT DISTINCT course_id FROM {$table} WHERE form_id = %d AND field_id = %s",
+                $form_id,
+                $field_id
+            )
+        );
+    }
+
+    public static function mapping_exists( $form_id, $field_id, $course_id, $project_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return (bool) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT id FROM {$table} WHERE form_id = %d AND field_id = %s AND course_id = %d AND project_id = %d",
+                $form_id,
+                $field_id,
+                $course_id,
+                $project_id
+            )
+        );
+    }
+
+    public static function add_mapping( $form_id, $field_id, $course_id, $project_id ) {
         global $wpdb;
         $table = self::table( 'gf_mappings' );
         $wpdb->insert(
@@ -312,21 +392,68 @@ class CO360_DB {
             array(
                 'form_id'    => $form_id,
                 'field_id'   => $field_id,
+                'course_id'  => $course_id,
                 'project_id' => $project_id,
             ),
-            array( '%d', '%s', '%d' )
+            array( '%d', '%s', '%d', '%d' )
         );
     }
 
-    public static function delete_mapping( $id ) {
+    public static function delete_mapping_group( $course_id, $form_id, $field_id ) {
         global $wpdb;
         $table = self::table( 'gf_mappings' );
-        $wpdb->delete( $table, array( 'id' => $id ), array( '%d' ) );
+        $wpdb->delete(
+            $table,
+            array(
+                'course_id' => $course_id,
+                'form_id'   => $form_id,
+                'field_id'  => $field_id,
+            ),
+            array( '%d', '%d', '%s' )
+        );
     }
 
-    public static function get_mapping_for_form( $form_id ) {
+    public static function get_mappings_for_form( $form_id ) {
         global $wpdb;
         $table = self::table( 'gf_mappings' );
-        return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE form_id = %d", $form_id ) );
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table} WHERE form_id = %d",
+                $form_id
+            )
+        );
+    }
+
+    public static function get_mappings_for_form_field( $form_id, $field_id ) {
+        global $wpdb;
+        $table = self::table( 'gf_mappings' );
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table} WHERE form_id = %d AND field_id = %s",
+                $form_id,
+                $field_id
+            )
+        );
+    }
+
+    public static function find_code_in_projects( $code, $project_ids ) {
+        global $wpdb;
+        $table = self::table( 'codes' );
+        $project_ids = array_map( 'absint', (array) $project_ids );
+        $project_ids = array_filter( $project_ids );
+
+        if ( empty( $project_ids ) ) {
+            return array();
+        }
+
+        $placeholders = implode( ',', array_fill( 0, count( $project_ids ), '%d' ) );
+        $query        = "SELECT * FROM {$table}
+            WHERE code = %s
+            AND is_active = 1
+            AND uses_count < max_uses
+            AND project_id IN ({$placeholders})";
+
+        $params = array_merge( array( $code ), $project_ids );
+        return $wpdb->get_results( $wpdb->prepare( $query, $params ) );
     }
 }

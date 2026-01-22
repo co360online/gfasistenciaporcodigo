@@ -142,10 +142,33 @@ class CO360_Admin {
 
         $form_id    = isset( $_POST['form_id'] ) ? absint( $_POST['form_id'] ) : 0;
         $field_id   = isset( $_POST['field_id'] ) ? sanitize_text_field( wp_unslash( $_POST['field_id'] ) ) : '';
-        $project_id = isset( $_POST['project_id'] ) ? absint( $_POST['project_id'] ) : 0;
+        $course_id  = isset( $_POST['course_id'] ) ? absint( $_POST['course_id'] ) : 0;
+        $project_ids = isset( $_POST['project_ids'] ) ? (array) wp_unslash( $_POST['project_ids'] ) : array();
+        $project_ids = array_values( array_filter( array_map( 'absint', $project_ids ) ) );
 
-        if ( $form_id && $field_id && $project_id ) {
-            CO360_DB::add_mapping( $form_id, $field_id, $project_id );
+        if ( $form_id && $field_id && ! empty( $project_ids ) ) {
+            $existing_course_ids = CO360_DB::get_distinct_course_ids_for_form_field( $form_id, $field_id );
+            $conflict = false;
+
+            foreach ( $existing_course_ids as $existing_course_id ) {
+                if ( (int) $existing_course_id !== (int) $course_id ) {
+                    $conflict = true;
+                    break;
+                }
+            }
+
+            if ( $conflict ) {
+                wp_redirect( admin_url( 'admin.php?page=co360-attendance-settings&message=course_conflict' ) );
+                exit;
+            }
+
+            CO360_DB::delete_mapping_group( $course_id, $form_id, $field_id );
+
+            foreach ( $project_ids as $project_id ) {
+                if ( ! CO360_DB::mapping_exists( $form_id, $field_id, $course_id, $project_id ) ) {
+                    CO360_DB::add_mapping( $form_id, $field_id, $course_id, $project_id );
+                }
+            }
         }
 
         wp_redirect( admin_url( 'admin.php?page=co360-attendance-settings' ) );
@@ -156,9 +179,12 @@ class CO360_Admin {
         $this->check_permissions();
         check_admin_referer( 'co360_delete_mapping' );
 
-        $mapping_id = isset( $_GET['mapping_id'] ) ? absint( $_GET['mapping_id'] ) : 0;
-        if ( $mapping_id ) {
-            CO360_DB::delete_mapping( $mapping_id );
+        $course_id = isset( $_GET['course_id'] ) ? absint( $_GET['course_id'] ) : 0;
+        $form_id   = isset( $_GET['form_id'] ) ? absint( $_GET['form_id'] ) : 0;
+        $field_id  = isset( $_GET['field_id'] ) ? sanitize_text_field( wp_unslash( $_GET['field_id'] ) ) : '';
+
+        if ( $form_id && $field_id ) {
+            CO360_DB::delete_mapping_group( $course_id, $form_id, $field_id );
         }
 
         wp_redirect( admin_url( 'admin.php?page=co360-attendance-settings' ) );
@@ -433,7 +459,34 @@ class CO360_Admin {
     public function render_settings_page() {
         $this->check_permissions();
         $projects = CO360_DB::get_projects();
-        $maps     = CO360_DB::get_mappings();
+        $course_filter = null;
+        if ( isset( $_GET['course_id'] ) && '' !== $_GET['course_id'] ) {
+            $course_filter = absint( $_GET['course_id'] );
+        }
+        $maps     = CO360_DB::get_mapping_groups( $course_filter );
+        $course_ids = CO360_DB::get_course_ids();
+        $editing = null;
+
+        if ( isset( $_GET['action'], $_GET['course_id'], $_GET['form_id'], $_GET['field_id'] ) && 'edit' === $_GET['action'] ) {
+            $editing = CO360_DB::get_mapping_group(
+                absint( $_GET['course_id'] ),
+                absint( $_GET['form_id'] ),
+                sanitize_text_field( wp_unslash( $_GET['field_id'] ) )
+            );
+        }
+
+        $editing_course_id = 0;
+        $editing_form_id   = '';
+        $editing_field_id  = '';
+        $editing_projects  = array();
+
+        if ( $editing ) {
+            $first = $editing[0];
+            $editing_course_id = (int) $first->course_id;
+            $editing_form_id   = (int) $first->form_id;
+            $editing_field_id  = (string) $first->field_id;
+            $editing_projects  = wp_list_pluck( $editing, 'project_id' );
+        }
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Ajustes', 'co360-attendance-codes' ); ?></h1>
@@ -445,31 +498,52 @@ class CO360_Admin {
                 <table class="form-table">
                     <tr>
                         <th scope="row"><label for="co360-form-id"><?php esc_html_e( 'Form ID', 'co360-attendance-codes' ); ?></label></th>
-                        <td><input name="form_id" id="co360-form-id" type="number" min="1" required></td>
+                        <td><input name="form_id" id="co360-form-id" type="number" min="1" value="<?php echo esc_attr( $editing_form_id ); ?>" required></td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="co360-field-id"><?php esc_html_e( 'Field ID', 'co360-attendance-codes' ); ?></label></th>
-                        <td><input name="field_id" id="co360-field-id" type="text" required></td>
+                        <td><input name="field_id" id="co360-field-id" type="text" value="<?php echo esc_attr( $editing_field_id ); ?>" required></td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="co360-map-project"><?php esc_html_e( 'Proyecto', 'co360-attendance-codes' ); ?></label></th>
+                        <th scope="row"><label for="co360-course-id"><?php esc_html_e( 'Course ID', 'co360-attendance-codes' ); ?></label></th>
+                        <td><input name="course_id" id="co360-course-id" type="number" min="0" value="<?php echo esc_attr( $editing_course_id ); ?>" placeholder="<?php esc_attr_e( 'Solo informativo', 'co360-attendance-codes' ); ?>"></td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e( 'Proyectos vinculados', 'co360-attendance-codes' ); ?></th>
                         <td>
-                            <select name="project_id" id="co360-map-project" required>
-                                <option value=""><?php esc_html_e( 'Seleccionar', 'co360-attendance-codes' ); ?></option>
-                                <?php foreach ( $projects as $project ) : ?>
-                                    <option value="<?php echo esc_attr( $project->id ); ?>"><?php echo esc_html( $project->name ); ?></option>
-                                <?php endforeach; ?>
-                            </select>
+                            <?php foreach ( $projects as $project ) : ?>
+                                <label style="display:block;margin-bottom:4px;">
+                                    <input type="checkbox" name="project_ids[]" value="<?php echo esc_attr( $project->id ); ?>" <?php checked( in_array( $project->id, $editing_projects, true ) ); ?>>
+                                    <?php echo esc_html( $project->name ); ?>
+                                </label>
+                            <?php endforeach; ?>
                         </td>
                     </tr>
                 </table>
-                <?php submit_button( __( 'Añadir mapeo', 'co360-attendance-codes' ) ); ?>
+                <?php submit_button( $editing ? __( 'Guardar mapping', 'co360-attendance-codes' ) : __( 'Añadir mapeo', 'co360-attendance-codes' ) ); ?>
             </form>
 
             <h2><?php esc_html_e( 'Mapeos existentes', 'co360-attendance-codes' ); ?></h2>
+            <form method="get" action="">
+                <input type="hidden" name="page" value="co360-attendance-settings" />
+                <select name="course_id">
+                    <option value=""><?php esc_html_e( 'Todos los cursos', 'co360-attendance-codes' ); ?></option>
+                    <option value="0" <?php selected( $course_filter, 0 ); ?>><?php esc_html_e( 'Sin curso (0)', 'co360-attendance-codes' ); ?></option>
+                    <?php foreach ( $course_ids as $course_id ) : ?>
+                        <?php if ( 0 === (int) $course_id ) : ?>
+                            <?php continue; ?>
+                        <?php endif; ?>
+                        <option value="<?php echo esc_attr( $course_id ); ?>" <?php selected( $course_filter, (int) $course_id ); ?>>
+                            <?php echo esc_html( $course_id ); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <?php submit_button( __( 'Filtrar', 'co360-attendance-codes' ), 'secondary', '', false ); ?>
+            </form>
             <table class="widefat striped">
                 <thead>
                     <tr>
+                        <th><?php esc_html_e( 'Course ID', 'co360-attendance-codes' ); ?></th>
                         <th><?php esc_html_e( 'Form ID', 'co360-attendance-codes' ); ?></th>
                         <th><?php esc_html_e( 'Field ID', 'co360-attendance-codes' ); ?></th>
                         <th><?php esc_html_e( 'Proyecto', 'co360-attendance-codes' ); ?></th>
@@ -478,18 +552,32 @@ class CO360_Admin {
                 </thead>
                 <tbody>
                 <?php if ( empty( $maps ) ) : ?>
-                    <tr><td colspan="4"><?php esc_html_e( 'Sin mapeos todavía.', 'co360-attendance-codes' ); ?></td></tr>
+                    <tr><td colspan="5"><?php esc_html_e( 'Sin mapeos todavía.', 'co360-attendance-codes' ); ?></td></tr>
                 <?php else : ?>
                     <?php foreach ( $maps as $map ) : ?>
-                        <?php $project = CO360_DB::get_project( $map->project_id ); ?>
+                        <?php
+                        $delete_url = wp_nonce_url(
+                            admin_url(
+                                'admin-post.php?action=co360_delete_mapping&course_id=' . (int) $map->course_id .
+                                '&form_id=' . (int) $map->form_id .
+                                '&field_id=' . rawurlencode( (string) $map->field_id )
+                            ),
+                            'co360_delete_mapping'
+                        );
+                        $edit_url = admin_url(
+                            'admin.php?page=co360-attendance-settings&action=edit&course_id=' . (int) $map->course_id .
+                            '&form_id=' . (int) $map->form_id .
+                            '&field_id=' . rawurlencode( (string) $map->field_id )
+                        );
+                        ?>
                         <tr>
+                            <td><?php echo esc_html( $map->course_id ); ?></td>
                             <td><?php echo esc_html( $map->form_id ); ?></td>
                             <td><?php echo esc_html( $map->field_id ); ?></td>
-                            <td><?php echo esc_html( $project ? $project->name : '' ); ?></td>
+                            <td><?php echo esc_html( $map->project_names ); ?></td>
                             <td>
-                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=co360_delete_mapping&mapping_id=' . $map->id ), 'co360_delete_mapping' ) ); ?>">
-                                    <?php esc_html_e( 'Eliminar', 'co360-attendance-codes' ); ?>
-                                </a>
+                                <a href="<?php echo esc_url( $edit_url ); ?>"><?php esc_html_e( 'Editar', 'co360-attendance-codes' ); ?></a> |
+                                <a href="<?php echo esc_url( $delete_url ); ?>"><?php esc_html_e( 'Eliminar', 'co360-attendance-codes' ); ?></a>
                             </td>
                         </tr>
                     <?php endforeach; ?>
