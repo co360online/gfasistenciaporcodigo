@@ -263,6 +263,7 @@ class CO360_Admin {
         $project_id = isset( $_GET['project_id'] ) ? absint( $_GET['project_id'] ) : 0;
         $projects   = CO360_DB::get_projects();
         $codes      = $project_id ? CO360_DB::get_codes( $project_id ) : array();
+        $counts     = $project_id ? CO360_DB::get_project_code_counts( $project_id ) : null;
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Códigos', 'co360-attendance-codes' ); ?></h1>
@@ -313,24 +314,56 @@ class CO360_Admin {
                         <?php esc_html_e( 'Exportar CSV', 'co360-attendance-codes' ); ?>
                     </a>
                 </p>
+                <?php if ( $counts ) : ?>
+                    <p>
+                        <strong>
+                            <?php
+                            echo esc_html(
+                                sprintf(
+                                    '%d usados · %d disponibles',
+                                    (int) $counts->used_count,
+                                    (int) $counts->available_count
+                                )
+                            );
+                            ?>
+                        </strong>
+                    </p>
+                <?php endif; ?>
                 <table class="widefat striped">
                     <thead>
                         <tr>
                             <th><?php esc_html_e( 'Código', 'co360-attendance-codes' ); ?></th>
                             <th><?php esc_html_e( 'Usos', 'co360-attendance-codes' ); ?></th>
                             <th><?php esc_html_e( 'Estado', 'co360-attendance-codes' ); ?></th>
+                            <th><?php esc_html_e( 'Usado el', 'co360-attendance-codes' ); ?></th>
+                            <th><?php esc_html_e( 'Email', 'co360-attendance-codes' ); ?></th>
                             <th><?php esc_html_e( 'Creado', 'co360-attendance-codes' ); ?></th>
                         </tr>
                     </thead>
                     <tbody>
                     <?php if ( empty( $codes ) ) : ?>
-                        <tr><td colspan="4"><?php esc_html_e( 'No hay códigos para este proyecto.', 'co360-attendance-codes' ); ?></td></tr>
+                        <tr><td colspan="6"><?php esc_html_e( 'No hay códigos para este proyecto.', 'co360-attendance-codes' ); ?></td></tr>
                     <?php else : ?>
                         <?php foreach ( $codes as $code ) : ?>
+                            <?php
+                            $last_used_at = '—';
+                            if ( ! empty( $code->last_used_at ) ) {
+                                $last_used_at = date_i18n( 'Y-m-d H:i:s', strtotime( $code->last_used_at ) );
+                            }
+
+                            $last_email = '—';
+                            if ( ! empty( $code->last_user_id ) ) {
+                                $last_email = ! empty( $code->user_email ) ? $code->user_email : '—';
+                            } elseif ( ! empty( $code->last_used_at ) ) {
+                                $last_email = __( 'No logueado', 'co360-attendance-codes' );
+                            }
+                            ?>
                             <tr>
                                 <td><?php echo esc_html( $code->code ); ?></td>
                                 <td><?php echo esc_html( $code->uses_count . '/' . $code->max_uses ); ?></td>
                                 <td><?php echo esc_html( $code->uses_count >= $code->max_uses ? __( 'Usado', 'co360-attendance-codes' ) : __( 'No usado', 'co360-attendance-codes' ) ); ?></td>
+                                <td><?php echo esc_html( $last_used_at ); ?></td>
+                                <td><?php echo esc_html( $last_email ); ?></td>
                                 <td><?php echo esc_html( $code->created_at ); ?></td>
                             </tr>
                         <?php endforeach; ?>

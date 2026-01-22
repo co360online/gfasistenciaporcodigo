@@ -167,11 +167,54 @@ class CO360_DB {
 
     public static function get_codes( $project_id = 0 ) {
         global $wpdb;
-        $table = self::table( 'codes' );
+        $codes = self::table( 'codes' );
+        $uses  = self::table( 'uses' );
+        $users = $wpdb->users;
+
+        $select = "SELECT
+            codes.*,
+            last_uses.last_used_at,
+            last_uses.last_user_id,
+            users.user_email";
+
+        $from = " FROM {$codes} AS codes
+            LEFT JOIN (
+                /* Last use per code_id: pick MAX(used_at) and its corresponding user_id. */
+                SELECT
+                    uses.code_id,
+                    uses.user_id AS last_user_id,
+                    uses.used_at AS last_used_at
+                FROM {$uses} AS uses
+                INNER JOIN (
+                    SELECT code_id, MAX(used_at) AS last_used_at
+                    FROM {$uses}
+                    GROUP BY code_id
+                ) AS max_uses ON uses.code_id = max_uses.code_id AND uses.used_at = max_uses.last_used_at
+            ) AS last_uses ON codes.id = last_uses.code_id
+            LEFT JOIN {$users} AS users ON last_uses.last_user_id = users.ID";
+
         if ( $project_id ) {
-            return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE project_id = %d ORDER BY created_at DESC", $project_id ) );
+            return $wpdb->get_results(
+                $wpdb->prepare( $select . $from . ' WHERE codes.project_id = %d ORDER BY codes.created_at DESC', $project_id )
+            );
         }
-        return $wpdb->get_results( "SELECT * FROM {$table} ORDER BY created_at DESC" );
+
+        return $wpdb->get_results( $select . $from . ' ORDER BY codes.created_at DESC' );
+    }
+
+    public static function get_project_code_counts( $project_id ) {
+        global $wpdb;
+        $codes = self::table( 'codes' );
+        return $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT
+                    SUM(CASE WHEN uses_count >= max_uses THEN 1 ELSE 0 END) AS used_count,
+                    SUM(CASE WHEN uses_count < max_uses AND is_active = 1 THEN 1 ELSE 0 END) AS available_count
+                FROM {$codes}
+                WHERE project_id = %d",
+                $project_id
+            )
+        );
     }
 
     public static function generate_codes( $project_id, $quantity, $length, $prefix, $max_uses ) {

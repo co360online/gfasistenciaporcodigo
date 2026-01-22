@@ -24,10 +24,19 @@ class CO360_CSV {
         header( 'Expires: 0' );
 
         $output = fopen( 'php://output', 'w' );
-        fputcsv( $output, array( 'project_name', 'code', 'max_uses', 'uses_count', 'status', 'created_at' ) );
+        fputcsv( $output, array( 'project_name', 'code', 'max_uses', 'uses_count', 'status', 'used_at', 'user_email', 'created_at' ) );
 
         foreach ( $codes as $code ) {
             $status = ( $code->uses_count >= $code->max_uses ) ? 'used' : 'unused';
+            $used_at = '';
+            $user_email = '';
+
+            if ( ! empty( $code->last_used_at ) ) {
+                $used_at = $code->last_used_at;
+                if ( ! empty( $code->last_user_id ) && ! empty( $code->user_email ) ) {
+                    $user_email = $code->user_email;
+                }
+            }
             fputcsv(
                 $output,
                 array(
@@ -36,6 +45,8 @@ class CO360_CSV {
                     $code->max_uses,
                     $code->uses_count,
                     $status,
+                    $used_at,
+                    $user_email,
                     $code->created_at,
                 )
             );
